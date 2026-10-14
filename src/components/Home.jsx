@@ -1,15 +1,17 @@
 import React, { useState } from 'react';
-import { MG_LABEL, TYPE_LABEL, weekVolume } from '../lib/format';
+import { MG_LABEL, MG_ORDER, TYPE_LABEL, weekVolume, plannedVolume, fmtDate } from '../lib/format';
 
-export default function Home({ program, sessions, bodyweights, onOpenDay, onEditProgram, onSaveBodyweight }){
+export default function Home({ program, sessions, bodyweights, staleDraft, onResumeDraft, onDiscardDraft,
+  onOpenDay, onEditProgram, onSaveBodyweight, onOpenBodyweight }){
   const [showBwInput, setShowBwInput] = useState(false);
   const [bwValue, setBwValue] = useState('');
   const lastBw = bodyweights[0];
-  const vol = weekVolume(sessions);
-  const maxVol = Math.max(1, ...Object.values(vol));
+  const done = weekVolume(sessions);
+  const planned = plannedVolume(program);
+  const groups = MG_ORDER.filter(g => (done[g]||0) > 0 || (planned[g]||0) > 0);
 
   function handleSaveBw(){
-    const w = parseFloat(bwValue);
+    const w = parseFloat(String(bwValue).replace(',','.'));
     if (!w) return;
     onSaveBodyweight(w);
     setShowBwInput(false);
@@ -23,7 +25,18 @@ export default function Home({ program, sessions, bodyweights, onOpenDay, onEdit
         <div className="icon-btn" onClick={onEditProgram}>✎</div>
       </div>
 
-      <div className="bw-row" onClick={()=>{ if(!showBwInput) setShowBwInput(true); }}>
+      {staleDraft && (
+        <div className="card resume-card" style={{cursor:'default'}}>
+          <div className="resume-title">Séance non terminée</div>
+          <div className="day-sub">{staleDraft.dayTitle} · {fmtDate(staleDraft.savedAt || Date.now())}</div>
+          <div className="row" style={{marginTop:12}}>
+            <button className="btn btn-primary btn-sm" onClick={onResumeDraft}>Reprendre</button>
+            <button className="btn btn-secondary btn-sm" onClick={onDiscardDraft}>Supprimer</button>
+          </div>
+        </div>
+      )}
+
+      <div className="bw-row" onClick={onOpenBodyweight}>
         {showBwInput ? (
           <div style={{width:'100%'}} onClick={(e)=>e.stopPropagation()}>
             <div className="field-label" style={{margin:'0 0 8px 0'}}>Poids du jour (kg)</div>
@@ -37,25 +50,30 @@ export default function Home({ program, sessions, bodyweights, onOpenDay, onEdit
         ) : (
           <>
             <div>
-              <div style={{fontSize:12,color:'var(--text-dim)'}}>Poids corporel</div>
+              <div style={{fontSize:12,color:'var(--text-dim)'}}>Poids corporel · voir la courbe ›</div>
               <div style={{fontWeight:700,fontSize:16,marginTop:2}}>{lastBw ? `${lastBw.weight} kg` : '—'}</div>
             </div>
-            <div className="icon-mini">+</div>
+            <div className="icon-mini" onClick={(e)=>{ e.stopPropagation(); setShowBwInput(true); }}>+</div>
           </>
         )}
       </div>
 
-      {Object.keys(vol).length>0 && (
+      {groups.length>0 && (
         <>
-          <div className="section-title">Volume cette semaine</div>
+          <div className="section-title">Volume · depuis lundi</div>
           <div className="card" style={{cursor:'default'}}>
-            {Object.keys(vol).map(mg=>(
-              <div className="vol-row" key={mg}>
-                <div className="vol-label">{MG_LABEL[mg]||mg}</div>
-                <div className="vol-track"><div className="vol-fill" style={{width:`${Math.round(vol[mg]/maxVol*100)}%`}}/></div>
-                <div className="vol-count">{vol[mg]}</div>
-              </div>
-            ))}
+            {groups.map(mg=>{
+              const d = done[mg]||0, p = planned[mg]||0;
+              const pct = p ? Math.min(100, Math.round(d/p*100)) : 100;
+              return (
+                <div className="vol-row" key={mg}>
+                  <div className="vol-label">{MG_LABEL[mg]||mg}</div>
+                  <div className="vol-track"><div className="vol-fill" style={{width:`${pct}%`, opacity: p && d>=p ? 1 : 0.75}}/></div>
+                  <div className="vol-count">{d}{p?`/${p}`:''}</div>
+                </div>
+              );
+            })}
+            <div className="vol-hint">Remis à zéro chaque lundi à 00h00 · objectif = séries prévues au programme</div>
           </div>
         </>
       )}

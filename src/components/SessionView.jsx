@@ -1,45 +1,83 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { MG_LABEL, DIFFS, DIFF_COLOR, findLastForExercise, maxWeightEver, fmtSecs } from '../lib/format';
+import { MG_LABEL, DIFFS, DIFF_COLOR, lastSessionFor, maxWeightEver, formatSet, fmtSecs, fmtDate, num } from '../lib/format';
+import { newSet, buildExerciseDraft, hasAnythingToSave } from '../lib/session';
 import ExercisePicker from './ExercisePicker.jsx';
+import ConfirmSheet from './ConfirmSheet.jsx';
 
-export default function SessionView({ draft, setDraft, sessions, library, program, saveProgram, onCancel, onFinish }){
+export default function SessionView({ draft, setDraft, sessions, library, program, saveProgram, onCancel, onFinish, finishing }){
   const [swapIdx, setSwapIdx] = useState(null);
+  const [adding, setAdding] = useState(false);
   const [alsoProgram, setAlsoProgram] = useState(false);
-  const [timer, setTimer] = useState(null); // {remaining, total}
-  const intervalRef = useRef(null);
+  const [timer, setTimer] = useState(null); // {remaining,total}
+  const [expanded, setExpanded] = useState({});
+  const [noteOpen, setNoteOpen] = useState({});
+  const [confirm, setConfirm] = useState(null); // {kind, idx}
+  const timerRef = useRef(null);
 
+  // Minuteur de repos
   useEffect(()=>{
     if (timer && timer.remaining > 0){
-      intervalRef.current = setTimeout(()=>{
-        setTimer(t => t ? {...t, remaining: t.remaining-1} : t);
-      }, 1000);
-      return ()=>clearTimeout(intervalRef.current);
+      timerRef.current = setTimeout(()=> setTimer(t => t ? {...t, remaining: t.remaining-1} : t), 1000);
+      return ()=>clearTimeout(timerRef.current);
     }
-    if (timer && timer.remaining <= 0){
-      setTimer(null);
-    }
+    if (timer && timer.remaining <= 0) setTimer(null);
   },[timer]);
 
-  function updateExercise(idx, patch){
+  // Écran allumé pendant la séance
+  useEffect(()=>{
+    let lock = null, stopped = false;
+    async function acquire(){
+      try{
+        if (!stopped && navigator.wakeLock && document.visibilityState==='visible'){
+          lock = await navigator.wakeLock.request('screen');
+        }
+      }catch{}
+    }
+    acquire();
+    const onVis = ()=>{ if (document.visibilityState==='visible') acquire(); };
+    document.addEventListener('visibilitychange', onVis);
+    return ()=>{
+      stopped = true;
+      document.removeEventListener('visibilitychange', onVis);
+      try{ lock && lock.release(); }catch{}
+    };
+  },[]);
+
+  const exKey = (e, i) => e.key || `i${i}`;
+
+  function patchExercise(idx, patch){
     setDraft(d=>{
       const exercises = d.exercises.slice();
       exercises[idx] = {...exercises[idx], ...patch};
       return {...d, exercises};
     });
   }
-  function updateSet(exIdx, setIdx, field, value){
+  function patchSet(exIdx, setIdx, patch){
     setDraft(d=>{
       const exercises = d.exercises.slice();
       const sets = exercises[exIdx].sets.slice();
-      sets[setIdx] = {...sets[setIdx], [field]: value};
+      sets[setIdx] = {...sets[setIdx], ...patch};
       exercises[exIdx] = {...exercises[exIdx], sets};
       return {...d, exercises};
     });
   }
+  // Toute saisie valide la série (et enlève le gris "pré-rempli")
+  function editSet(exIdx, setIdx, field, value){
+    patchSet(exIdx, setIdx, { [field]: value, done:true, prefilled:false });
+  }
+  function toggleDone(exIdx, setIdx, s){
+    patchSet(exIdx, setIdx, { done: !s.done, prefilled:false });
+    if (!s.done) setTimer({remaining:90,total:90});
+  }
+  function pickDifficulty(exIdx, setIdx, s, d){
+    patchSet(exIdx, setIdx, { difficulty: s.difficulty===d ? null : d, done:true, prefilled:false });
+  }
   function addSet(exIdx){
     setDraft(d=>{
       const exercises = d.exercises.slice();
-      exercises[exIdx] = {...exercises[exIdx], sets:[...exercises[exIdx].sets, {weight:'',reps:'',duration:'',difficulty:null}]};
+      const sets = exercises[exIdx].sets;
+      const prev = sets[sets.length-1];
+      exercises[exIdx] = {...exercises[exIdx], sets:[...sets, newSet(prev ? {weight:prev.weight, reps:prev.reps, duration:prev.duration} : undefined)]};
       return {...d, exercises};
     });
   }
@@ -57,13 +95,21 @@ export default function SessionView({ draft, setDraft, sessions, library, progra
       return {...d, mobility};
     });
   }
+  function deleteExercise(idx){
+    setDraft(d=>({...d, exercises: d.exercises.filter((_,i)=>i!==idx)}));
+  }
+  function addExercise(name, muscleGroup){
+    const type = muscleGroup==='cardio' ? 'cardio' : muscleGroup==='mobilite' ? 'note' : 'muscu';
+    const ex = buildExerciseDraft({ name, muscleGroup, type, targetSets: type==='muscu' ? 3 : 1, targetReps:'' }, sessions);
+    setDraft(d=>({...d, exercises:[...d.exercises, ex]}));
+    setAdding(false);
+  }
 
   function doSwap(name, muscleGroup){
-    updateExercise(swapIdx, {name, muscleGroup});
+    patchExercise(swapIdx, {name, muscleGroup});
     if (alsoProgram){
-      const day = program.days.find(dd=>dd.id===draft.dayId);
       const ex = draft.exercises[swapIdx];
-      if (day && ex.refId){
+      if (ex && ex.refId){
         const nextDays = program.days.map(dd=>{
           if (dd.id !== draft.dayId) return dd;
           return {...dd, exercises: dd.exercises.map(pe=> pe.id===ex.refId ? {...pe, name, muscleGroup} : pe)};
@@ -74,25 +120,30 @@ export default function SessionView({ draft, setDraft, sessions, library, progra
     setSwapIdx(null); setAlsoProgram(false);
   }
 
-  function handleCancel(){
-    if (window.confirm('Abandonner cette séance ? Rien ne sera enregistré.')) onCancel();
+  function requestCancel(){
+    if (hasAnythingToSave(draft)) setConfirm({kind:'cancel'});
+    else onCancel();
+  }
+  function requestFinish(){
+    if (!hasAnythingToSave(draft)) setConfirm({kind:'empty'});
+    else onFinish();
   }
 
   return (
     <>
       <div className="back-row">
-        <div className="icon-btn" onClick={handleCancel}>✕</div>
+        <div className="icon-btn" onClick={requestCancel}>✕</div>
         <div>
           <div className="back-title">{draft.dayTitle}</div>
-          <div className="back-sub">En cours</div>
+          <div className="back-sub">En cours · sauvegarde auto</div>
         </div>
       </div>
 
       {draft.mobility && draft.mobility.length>0 && (
-        <div className="mobility-list">
+        <div className="mobility-list" style={{marginTop:14}}>
           <div className="mobility-title">Mobilité pré-séance</div>
           {draft.mobility.map((m,i)=>(
-            <div className="mob-item" key={m.id} style={{cursor:'pointer'}} onClick={()=>toggleMobility(i)}>
+            <div className="mob-item" key={m.id||i} style={{cursor:'pointer'}} onClick={()=>toggleMobility(i)}>
               <div className={`mob-check ${m.done?'done':''}`}>{m.done?'✓':''}</div>
               <div>
                 <div className="mob-name">{m.name}</div>
@@ -104,80 +155,115 @@ export default function SessionView({ draft, setDraft, sessions, library, progra
       )}
 
       {draft.exercises.map((e, exIdx)=>{
-        const last = findLastForExercise(sessions, e.name);
+        const k = exKey(e, exIdx);
+        const last = lastSessionFor(sessions, e.name);
         const maxW = maxWeightEver(sessions, e.name);
+        const open = !!expanded[k];
+        const lastSet = last ? last.sets[last.sets.length-1] : null;
         return (
-          <div className="ex-card" key={exIdx}>
+          <div className="ex-card" key={k}>
             <div className="ex-head">
               <div style={{flex:1}}>
                 <div className="mg-tag">{MG_LABEL[e.muscleGroup]||''}</div>
                 <div className="ex-name">{e.name}</div>
-                <div className="ex-target">{e.type==='note' ? 'À faire' : `Objectif : ${e.targetSets} x ${e.targetReps}`}</div>
-                {last && <div className="ex-last">Dernière fois : {last.weight}kg × {last.reps}</div>}
+                <div className="ex-target">{e.type==='note' ? 'À faire' : e.targetReps ? `Objectif : ${e.targetSets} x ${e.targetReps}` : 'Exercice ajouté'}</div>
               </div>
-              <div className="icon-mini" onClick={()=>setSwapIdx(exIdx)}>⇄</div>
+              <div className="head-actions">
+                <div className="icon-mini" onClick={()=>setSwapIdx(exIdx)} aria-label="Remplacer">⇄</div>
+                <div className="icon-mini" onClick={()=>setConfirm({kind:'delete', idx:exIdx})} aria-label="Supprimer">✕</div>
+              </div>
             </div>
 
+            {last && e.type!=='note' && (
+              <div className="last-box" onClick={()=>setExpanded(x=>({...x,[k]:!x[k]}))}>
+                <div className="last-line">
+                  <span>Dernière fois ({fmtDate(last.date)}) : {formatSet(lastSet, e.type)}</span>
+                  <span className="last-chev">{open?'▴':'▾'}</span>
+                </div>
+                {open && (
+                  <div className="last-detail">
+                    {last.sets.map((st,j)=>(
+                      <div className="last-set" key={j}>
+                        <span>{e.type==='cardio'?'Round':'Série'} {j+1}</span>
+                        <span>{formatSet(st, e.type)}</span>
+                        <span style={{color: st.difficulty ? DIFF_COLOR[st.difficulty] : 'var(--text-dim2)'}}>{st.difficulty || '—'}</span>
+                      </div>
+                    ))}
+                    {last.note && <div className="ex-note">📝 {last.note}</div>}
+                  </div>
+                )}
+              </div>
+            )}
+
             {e.type==='note' ? (
-              <div className="mob-item" style={{cursor:'pointer'}} onClick={()=>updateExercise(exIdx,{noteDone:!e.noteDone})}>
+              <div className="mob-item" style={{cursor:'pointer'}} onClick={()=>patchExercise(exIdx,{noteDone:!e.noteDone})}>
                 <div className={`mob-check ${e.noteDone?'done':''}`}>{e.noteDone?'✓':''}</div>
                 <div className="mob-name">Fait</div>
               </div>
             ) : (
               <>
                 {e.sets.map((s, setIdx)=>{
-                  const isPr = e.type==='muscu' && s.weight && parseFloat(s.weight)>=maxW && maxW>0;
+                  const w = num(s.weight);
+                  const isPr = e.type==='muscu' && s.done && !s.prefilled && w!==null && maxW>0 && w>maxW;
+                  const cls = `set-input${s.prefilled?' pre':''}`;
                   return (
-                    <div key={setIdx}>
-                      {e.type==='cardio' ? (
-                        <div className="set-row">
-                          <div className="set-idx">{setIdx+1}</div>
-                          <input className="set-input" style={{flex:2}} type="text" placeholder="durée / effort"
-                            value={s.duration} onChange={(ev)=>updateSet(exIdx,setIdx,'duration',ev.target.value)} />
-                          <div className="icon-mini" onClick={()=>removeSet(exIdx,setIdx)}>−</div>
-                        </div>
-                      ) : (
-                        <div className="set-row">
-                          <div className="set-idx">{setIdx+1}{isPr && <span className="pr-tag">PR</span>}</div>
-                          <div style={{flex:1}}>
-                            <input className="set-input" type="number" inputMode="decimal" placeholder="kg"
-                              value={s.weight} onChange={(ev)=>updateSet(exIdx,setIdx,'weight',ev.target.value)} />
-                          </div>
-                          <div style={{flex:1}}>
-                            <input className="set-input" type="number" inputMode="numeric" placeholder="reps"
-                              value={s.reps} onChange={(ev)=>updateSet(exIdx,setIdx,'reps',ev.target.value)} />
-                          </div>
-                          <div className="icon-mini" onClick={()=>removeSet(exIdx,setIdx)}>−</div>
-                        </div>
-                      )}
-                      <div className="diff-row" style={{margin:'0 0 10px 28px'}}>
+                    <div key={setIdx} className={`set-block${s.done?' is-done':''}`}>
+                      <div className="set-row">
+                        <div className="set-idx">{setIdx+1}</div>
+                        {e.type==='cardio' ? (
+                          <input className={cls} style={{flex:2}} type="text" placeholder="durée / effort" value={s.duration}
+                            onFocus={(ev)=>ev.target.select()} onChange={(ev)=>editSet(exIdx,setIdx,'duration',ev.target.value)} />
+                        ) : (
+                          <>
+                            <div style={{flex:1}}>
+                              <input className={cls} type="number" inputMode="decimal" placeholder="kg" value={s.weight}
+                                onFocus={(ev)=>ev.target.select()} onChange={(ev)=>editSet(exIdx,setIdx,'weight',ev.target.value)} />
+                            </div>
+                            <div style={{flex:1}}>
+                              <input className={cls} type="number" inputMode="numeric" placeholder="reps" value={s.reps}
+                                onFocus={(ev)=>ev.target.select()} onChange={(ev)=>editSet(exIdx,setIdx,'reps',ev.target.value)} />
+                            </div>
+                          </>
+                        )}
+                        <div className={`set-check${s.done?' on':''}`} onClick={()=>toggleDone(exIdx,setIdx,s)} aria-label="Valider la série">✓</div>
+                        <div className="icon-mini" onClick={()=>removeSet(exIdx,setIdx)} aria-label="Retirer la série">−</div>
+                      </div>
+                      {isPr && <div className="pr-line"><span className="pr-tag">PR</span></div>}
+                      <div className="diff-row" style={{margin:'0 0 12px 28px'}}>
                         {DIFFS.map(d=>{
                           const sel = s.difficulty===d;
                           return (
                             <div key={d} className="diff-chip"
                               style={sel ? {background:DIFF_COLOR[d], color:'#0A0A0B', borderColor:DIFF_COLOR[d]} : {}}
-                              onClick={()=>updateSet(exIdx,setIdx,'difficulty',d)}>{d}</div>
+                              onClick={()=>pickDifficulty(exIdx,setIdx,s,d)}>{d}</div>
                           );
                         })}
                       </div>
                     </div>
                   );
                 })}
-                <button className="btn btn-ghost btn-sm" onClick={()=>addSet(exIdx)}>+ Ajouter une série</button>
-                <div style={{marginTop:8}}>
-                  <button className="btn btn-secondary btn-sm" onClick={()=>setTimer({remaining:90,total:90})}>⏱ Repos 90s</button>
+                <div className="row" style={{marginTop:4}}>
+                  <button className="btn btn-ghost btn-sm" style={{flex:1}} onClick={()=>addSet(exIdx)}>+ Série</button>
+                  <button className="btn btn-secondary btn-sm" onClick={()=>setNoteOpen(x=>({...x,[k]:!x[k]}))}>📝 Note</button>
+                  <button className="btn btn-secondary btn-sm" onClick={()=>setTimer({remaining:90,total:90})}>⏱ 90s</button>
                 </div>
+                {(noteOpen[k] || e.note) && (
+                  <textarea className="note-input" rows={2} placeholder="Note (sensations, réglage machine…)" value={e.note||''}
+                    onChange={(ev)=>patchExercise(exIdx,{note:ev.target.value})} />
+                )}
               </>
             )}
           </div>
         );
       })}
 
-      <button className="btn btn-primary" style={{marginTop:4}} onClick={onFinish}>Terminer la séance</button>
+      <button className="btn btn-secondary" style={{marginBottom:10}} onClick={()=>setAdding(true)}>+ Ajouter un exercice</button>
+      <button className="btn btn-primary" disabled={finishing} onClick={requestFinish}>{finishing ? 'Enregistrement…' : 'Terminer la séance'}</button>
 
       {timer && (
         <div className="timer-bar">
           ⏱ <span>{fmtSecs(timer.remaining)}</span>
+          <button onClick={()=>setTimer(t=>t?{...t,remaining:t.remaining+30}:t)}>+30s</button>
           <button onClick={()=>setTimer(null)}>Stop</button>
         </div>
       )}
@@ -191,6 +277,28 @@ export default function SessionView({ draft, setDraft, sessions, library, progra
           onClose={()=>{ setSwapIdx(null); setAlsoProgram(false); }}
           toggle={{ label: 'Aussi dans le programme', value: alsoProgram, onChange: setAlsoProgram }}
         />
+      )}
+      {adding && (
+        <ExercisePicker
+          title="Ajouter un exercice"
+          library={library}
+          onPick={(name,mg)=>addExercise(name,mg)}
+          onCustom={(name)=>addExercise(name,'autre')}
+          onClose={()=>setAdding(false)}
+        />
+      )}
+
+      {confirm?.kind==='cancel' && (
+        <ConfirmSheet title="Abandonner la séance ?" message="Les séries validées ne seront pas enregistrées."
+          confirmLabel="Abandonner" onCancel={()=>setConfirm(null)} onConfirm={()=>{ setConfirm(null); onCancel(); }} />
+      )}
+      {confirm?.kind==='empty' && (
+        <ConfirmSheet title="Aucune série validée" message="Valide au moins une série avec ✓ (ou en saisissant des valeurs). Quitter sans enregistrer ?"
+          confirmLabel="Quitter" onCancel={()=>setConfirm(null)} onConfirm={()=>{ setConfirm(null); onCancel(); }} />
+      )}
+      {confirm?.kind==='delete' && (
+        <ConfirmSheet title="Supprimer l'exercice ?" message={draft.exercises[confirm.idx]?.name}
+          confirmLabel="Supprimer" onCancel={()=>setConfirm(null)} onConfirm={()=>{ deleteExercise(confirm.idx); setConfirm(null); }} />
       )}
     </>
   );
