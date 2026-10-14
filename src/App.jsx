@@ -211,7 +211,8 @@ export default function App(){
           onOpen={(name)=>go('progressDetail',{progressName:name})} onBodyweight={()=>go('bodyweight',{})} />
       )}
       {view==='progressDetail' && (
-        <ProgressDetail name={progressName} sessions={sessions} onBack={()=>go('progress',{})} />
+        <ProgressDetail name={progressName} sessions={sessions} onBack={()=>go('progress',{})}
+          onUpdateSession={updateSession} />
       )}
       {view==='bodyweight' && (
         <BodyweightDetail bodyweights={bodyweights} onBack={()=>go('progress',{})}
