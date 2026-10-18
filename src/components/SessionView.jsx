@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { MG_LABEL, DIFFS, DIFF_COLOR, lastSessionFor, maxWeightEver, formatSet, fmtSecs, fmtDate, num } from '../lib/format';
-import { newSet, buildExerciseDraft, hasAnythingToSave } from '../lib/session';
+import { newSet, exerciseFor, hasAnythingToSave } from '../lib/session';
 import ExercisePicker from './ExercisePicker.jsx';
 import ConfirmSheet from './ConfirmSheet.jsx';
 
@@ -99,25 +99,39 @@ export default function SessionView({ draft, setDraft, sessions, library, progra
     setDraft(d=>({...d, exercises: d.exercises.filter((_,i)=>i!==idx)}));
   }
   function addExercise(name, muscleGroup){
-    const type = muscleGroup==='cardio' ? 'cardio' : muscleGroup==='mobilite' ? 'note' : 'muscu';
-    const ex = buildExerciseDraft({ name, muscleGroup, type, targetSets: type==='muscu' ? 3 : 1, targetReps:'' }, sessions);
+    const ex = exerciseFor(name, muscleGroup, program, sessions);
     setDraft(d=>({...d, exercises:[...d.exercises, ex]}));
     setAdding(false);
   }
 
-  function doSwap(name, muscleGroup){
-    patchExercise(swapIdx, {name, muscleGroup});
-    if (alsoProgram){
-      const ex = draft.exercises[swapIdx];
-      if (ex && ex.refId){
-        const nextDays = program.days.map(dd=>{
-          if (dd.id !== draft.dayId) return dd;
-          return {...dd, exercises: dd.exercises.map(pe=> pe.id===ex.refId ? {...pe, name, muscleGroup} : pe)};
-        });
-        saveProgram({...program, days: nextDays});
-      }
+  // Remplacement : séries / reps / historique de l'exercice choisi (pas ceux de l'ancien)
+  function applySwap(idx, name, muscleGroup, also){
+    const old = draft.exercises[idx];
+    if (!old) return;
+    const ex = exerciseFor(name, muscleGroup, program, sessions, old);
+    setDraft(d=>{
+      const exercises = d.exercises.slice();
+      exercises[idx] = ex;
+      return {...d, exercises};
+    });
+    if (also && old.refId){
+      const nextDays = program.days.map(dd=>{
+        if (dd.id !== draft.dayId) return dd;
+        return {...dd, exercises: dd.exercises.map(pe=> pe.id===old.refId
+          ? {...pe, name:ex.name, muscleGroup:ex.muscleGroup, type:ex.type, targetSets:ex.targetSets, targetReps:ex.targetReps} : pe)};
+      });
+      saveProgram({...program, days: nextDays});
     }
+    setExpanded(x=>({...x,[ex.key]:false}));
+  }
+
+  function doSwap(name, muscleGroup){
+    const idx = swapIdx, also = alsoProgram;
+    const old = draft.exercises[idx];
     setSwapIdx(null); setAlsoProgram(false);
+    const hasDone = old && ((old.sets||[]).some(s=>s.done) || old.noteDone);
+    if (hasDone) setConfirm({kind:'swap', idx, name, muscleGroup, also});
+    else applySwap(idx, name, muscleGroup, also);
   }
 
   function requestCancel(){
@@ -295,6 +309,11 @@ export default function SessionView({ draft, setDraft, sessions, library, progra
       {confirm?.kind==='empty' && (
         <ConfirmSheet title="Aucune série validée" message="Valide au moins une série avec ✓ (ou en saisissant des valeurs). Quitter sans enregistrer ?"
           confirmLabel="Quitter" onCancel={()=>setConfirm(null)} onConfirm={()=>{ setConfirm(null); onCancel(); }} />
+      )}
+      {confirm?.kind==='swap' && (
+        <ConfirmSheet title="Remplacer l'exercice ?" message="Les séries déjà validées sur l'exercice actuel seront perdues."
+          confirmLabel="Remplacer" onCancel={()=>setConfirm(null)}
+          onConfirm={()=>{ const c = confirm; setConfirm(null); applySwap(c.idx, c.name, c.muscleGroup, c.also); }} />
       )}
       {confirm?.kind==='delete' && (
         <ConfirmSheet title="Supprimer l'exercice ?" message={draft.exercises[confirm.idx]?.name}

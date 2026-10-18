@@ -30,6 +30,11 @@ export function daysAgo(iso){
   return (Date.now() - new Date(iso).getTime()) / 86400000;
 }
 
+export function normName(n){
+  return String(n||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/\s+/g,' ').trim();
+}
+export function sameName(a,b){ return normName(a)===normName(b); }
+
 export function num(v){
   const n = parseFloat(String(v ?? '').replace(',','.'));
   return isNaN(n) ? null : n;
@@ -75,7 +80,7 @@ export function plannedVolume(program){
 /** Dernière séance contenant des données pour cet exercice. */
 export function lastSessionFor(sessions, name){
   for (const s of sessions){
-    const ex = (s.exercises||[]).find(e => e.name===name &&
+    const ex = (s.exercises||[]).find(e => sameName(e.name,name) &&
       (e.sets||[]).some(st => hasData(st) || (st.duration!=='' && st.duration!=null)));
     if (ex) return { date:s.date, sets:ex.sets, note:ex.note||'', type:ex.type };
   }
@@ -86,7 +91,7 @@ export function maxWeightEver(sessions, name){
   let max = 0;
   for (const s of sessions){
     for (const e of (s.exercises||[])){
-      if (e.name !== name) continue;
+      if (!sameName(e.name,name)) continue;
       for (const st of (e.sets||[])){
         const w = num(st.weight);
         if (w!==null && w>max) max=w;
@@ -109,7 +114,7 @@ export function exerciseHistory(sessions, name){
   for (const s of sessions){
     let best = null;
     for (const e of (s.exercises||[])){
-      if (e.name !== name || e.type==='cardio' || e.type==='note') continue;
+      if (!sameName(e.name,name) || e.type==='cardio' || e.type==='note') continue;
       for (const st of (e.sets||[])){
         const w = num(st.weight);
         if (w===null) continue;
@@ -124,19 +129,16 @@ export function exerciseHistory(sessions, name){
 
 /** Exercices muscu du programme ou de l'historique, avec leur progression. */
 export function muscuExerciseList(sessions, program){
-  const meta = new Map();
-  for (const d of (program?.days||[])){
-    for (const e of (d.exercises||[])){
-      if (e.type==='muscu' && !meta.has(e.name)) meta.set(e.name, e.muscleGroup);
-    }
-  }
-  for (const s of sessions){
-    for (const e of (s.exercises||[])){
-      if (e.type==='muscu' && !meta.has(e.name)) meta.set(e.name, e.muscleGroup);
-    }
-  }
+  const meta = new Map(); // clé normalisée -> {name, mg}
+  const add = (e) => {
+    if (e.type!=='muscu') return;
+    const k = normName(e.name);
+    if (!meta.has(k)) meta.set(k, { name:e.name, mg:e.muscleGroup });
+  };
+  for (const d of (program?.days||[])) for (const e of (d.exercises||[])) add(e);
+  for (const s of sessions) for (const e of (s.exercises||[])) add(e);
   const out = [];
-  for (const [name, mg] of meta){
+  for (const { name, mg } of meta.values()){
     const pts = exerciseHistory(sessions, name);
     if (!pts.length) continue;
     out.push({ name, muscleGroup:mg, points:pts, last:pts[pts.length-1], first:pts[0] });

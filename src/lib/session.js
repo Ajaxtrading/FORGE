@@ -1,4 +1,4 @@
-import { uid, lastSessionFor, num } from './format';
+import { uid, lastSessionFor, num, sameName } from './format';
 
 export const DRAFT_KEY = 'forge_session_draft_v1';
 const FRESH_MS = 6 * 3600 * 1000;
@@ -25,6 +25,33 @@ export function buildExerciseDraft(e, sessions){
     return newSet({ weight:src.weight, reps:src.reps, duration:src.duration });
   });
   return base;
+}
+
+/** Type / séries / reps d'un exercice : programme d'abord, puis dernière séance, sinon défaut. */
+export function exerciseDefaults(name, muscleGroup, program, sessions){
+  for (const d of (program?.days||[])){
+    for (const e of (d.exercises||[])){
+      if (sameName(e.name, name)) return { name:e.name, type:e.type||'muscu', muscleGroup:e.muscleGroup||muscleGroup, targetSets:e.targetSets, targetReps:e.targetReps||'' };
+    }
+  }
+  for (const s of sessions){
+    for (const e of (s.exercises||[])){
+      if (sameName(e.name, name)){
+        return { name:e.name, type:e.type||'muscu', muscleGroup:e.muscleGroup||muscleGroup,
+          targetSets: e.targetSets || (e.sets||[]).length || 3, targetReps:e.targetReps||'' };
+      }
+    }
+  }
+  const type = muscleGroup==='cardio' ? 'cardio' : (muscleGroup==='mobilite' || muscleGroup==='cou') ? 'note' : 'muscu';
+  return { name, type, muscleGroup, targetSets: type==='muscu' ? 3 : 1, targetReps:'' };
+}
+
+/** Nouvel exercice complet (séries, reps, historique) pour un ajout ou un remplacement. */
+export function exerciseFor(name, muscleGroup, program, sessions, keep){
+  const d = exerciseDefaults(name, muscleGroup, program, sessions);
+  const ex = buildExerciseDraft({ ...d, refId: keep?.refId || null }, sessions);
+  if (keep){ ex.key = keep.key || ex.key; ex.note = keep.note || ''; }
+  return ex;
 }
 
 export function buildDraft(day, sessions){

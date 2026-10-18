@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { exerciseHistory, fmtDate, formatSet, DIFF_COLOR } from '../lib/format';
+import { exerciseHistory, fmtDate, formatSet, sameName, DIFF_COLOR } from '../lib/format';
 import LineChart from './LineChart.jsx';
 import ConfirmSheet from './ConfirmSheet.jsx';
 
@@ -8,7 +8,7 @@ function entriesFor(sessions, name){
   const out = [];
   for (const s of sessions){
     (s.exercises||[]).forEach((e, ei)=>{
-      if (e.name !== name || e.type==='cardio' || e.type==='note') return;
+      if (!sameName(e.name, name) || e.type==='cardio' || e.type==='note') return;
       if (!(e.sets||[]).length) return;
       out.push({ session:s, ei, sets:e.sets });
     });
